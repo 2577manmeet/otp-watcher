@@ -13,9 +13,8 @@ interface OTPEntry {
 interface DebugChecked {
   uid: number;
   subject: string;
-  toAddresses: string[];
+  toHeader: string;
   codeFound: string | null;
-  aliasMatch: boolean;
 }
 
 interface DebugInfo {
@@ -148,9 +147,8 @@ export default function EmailPage() {
               <div key={i} className="border-t border-white/5 py-2">
                 <p className="text-xs text-white/50">UID {c.uid}: <span className="text-white/70">{c.subject}</span></p>
                 <p className="text-xs text-white/30">
-                  To: [{c.toAddresses.join(", ")}]
+                  To header: {c.toHeader}
                   {" | "}code: {c.codeFound || "none"}
-                  {" | "}alias match: <span className={c.aliasMatch ? "text-emerald-400" : "text-red-400"}>{c.aliasMatch ? "YES" : "NO"}</span>
                 </p>
               </div>
             ))}
