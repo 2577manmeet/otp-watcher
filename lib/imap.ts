@@ -30,26 +30,31 @@ export async function fetchOTPCodes(
   try {
     await client.mailboxOpen("INBOX");
 
-    // Search for emails addressed to this Hide My Email alias
-    const messages = await client.search({
-      to: email,
-    });
+    // Fetch recent messages and filter by searching raw source for the alias
+    // Can't rely on To: header — iCloud Hide My Email forwarded to Gmail
+    // only shows Gmail address in To:. The alias appears in Delivered-To,
+    // X-Forwarded-To, or X-Original-To headers in the raw source.
+    const allMessages = await client.search({ seen: false }, { uid: true });
+    const seenMessages = await client.search({ seen: true }, { uid: true });
+    const allUids = [...(allMessages || []), ...(seenMessages || [])];
 
-    if (!messages || messages.length === 0) {
-      return [];
-    }
+    // Sort descending, take recent batch to scan
+    const recentUids = allUids.sort((a, b) => Number(b) - Number(a)).slice(0, 50);
 
-    // Take most recent `limit` messages
-    const recent = messages.slice(-limit).reverse();
+    for (const uid of recentUids) {
+      if (results.length >= limit) break;
 
-    for (const uid of recent) {
-      const msg = await client.fetchOne(uid.toString(), {
-        source: true,
-      });
+      const msg = await client.fetchOne(uid.toString(), { source: true }, { uid: true });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const msgAny = msg as any;
       if (!msgAny?.source) continue;
+
+      const rawSource = msgAny.source.toString("utf8");
+
+      // Check if the alias appears anywhere in the raw headers
+      const lowerSource = rawSource.slice(0, 2000).toLowerCase(); // only scan headers
+      if (!lowerSource.includes(email.toLowerCase())) continue;
 
       const parsed = await simpleParser(msgAny.source);
       const subject = parsed.subject || "";
