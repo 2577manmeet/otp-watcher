@@ -17,7 +17,6 @@ export async function fetchLatestOTP(email: string): Promise<OTPEntry | null> {
       pass: process.env.IMAP_PASS!,
     },
     logger: false,
-    tls: { rejectUnauthorized: false },
   });
 
   await client.connect();
@@ -25,31 +24,41 @@ export async function fetchLatestOTP(email: string): Promise<OTPEntry | null> {
   try {
     await client.mailboxOpen("INBOX");
 
-    // Search for emails with a code in the subject — server-side, fast
+    // Server-side search for OTP-looking emails
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const uids = await client.search({ subject: "code" } as any, { uid: true }) as number[];
-
+    const uids = (await client.search({ subject: "code" } as any, { uid: true })) as number[];
     if (!uids || uids.length === 0) return null;
 
-    // Only check the most recent 10, newest first
-    const recent = uids.sort((a, b) => b - a).slice(0, 10);
+    // Newest 20 first
+    const recent = uids.sort((a, b) => b - a).slice(0, 20);
+
+    const targetEmail = email.toLowerCase().trim();
 
     for (const uid of recent) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const msg = await (client as any).fetchOne(
         uid.toString(),
-        { envelope: true, source: { start: 0, maxLength: 800 } },
+        { envelope: true },
         { uid: true }
       );
       if (!msg) continue;
 
+      // Check all envelope recipient fields — parsed by imapflow, no byte limits
+      const recipients = [
+        ...(msg.envelope?.to || []),
+        ...(msg.envelope?.cc || []),
+        ...(msg.envelope?.bcc || []),
+      ];
+
+      const matches = recipients.some(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (r: any) => (r.address || "").toLowerCase() === targetEmail
+      );
+      if (!matches) continue;
+
       const subject: string = msg.envelope?.subject || "";
       const codeMatch = subject.match(/\b(\d{4,8})\b/);
       if (!codeMatch) continue;
-
-      // Check raw header snippet for the alias
-      const headerSnippet = msg.source?.toString("utf8")?.toLowerCase() || "";
-      if (!headerSnippet.includes(email.toLowerCase())) continue;
 
       const fromAddr = msg.envelope?.from?.[0];
       return {
