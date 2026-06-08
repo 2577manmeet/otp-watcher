@@ -8,12 +8,13 @@ export interface OTPEntry {
 }
 
 export interface DebugInfo {
-  searchMethod: string;
-  searchCount: number;
+  totalMessages: number;
+  fetchedRange: string;
   checked: Array<{
+    seq: number;
     uid: number;
     subject: string;
-    rawHeaders: string;
+    date: string;
     codeFound: string | null;
   }>;
 }
@@ -33,113 +34,75 @@ export async function fetchLatestOTP(
   });
 
   await client.connect();
-  const debug: DebugInfo = { searchMethod: "", searchCount: 0, checked: [] };
+  const debug: DebugInfo = { totalMessages: 0, fetchedRange: "", checked: [] };
 
   try {
-    await client.mailboxOpen("INBOX");
+    const mailbox = await client.mailboxOpen("INBOX");
+    debug.totalMessages = mailbox.exists || 0;
 
-    let uids: number[] = [];
+    if (!debug.totalMessages) return { entry: null, debug };
 
-    // Try Gmail X-GM-RAW first — best for finding alias-specific emails
-    try {
-      uids = (await client.search(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { raw: `X-GM-RAW "to:${email} subject:code"` } as any,
-        { uid: true }
-      )) as number[];
-      if (uids.length) debug.searchMethod = "X-GM-RAW";
-    } catch { uids = []; }
+    // Grab the last 30 messages by sequence number — no SEARCH needed
+    const lastSeq = debug.totalMessages;
+    const startSeq = Math.max(1, lastSeq - 29);
+    debug.fetchedRange = `${startSeq}:${lastSeq}`;
 
-    // Fallback: subject search
-    if (!uids.length) {
-      try {
-        uids = (await client.search(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          { subject: "Enter code" } as any,
-          { uid: true }
-        )) as number[];
-        if (uids.length) debug.searchMethod = "subject:Enter code";
-      } catch { uids = []; }
+    const candidates: Array<{
+      seq: number;
+      uid: number;
+      subject: string;
+      date: Date;
+      from: string;
+      code: string;
+    }> = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for await (const msg of (client as any).fetch(`${startSeq}:${lastSeq}`, { envelope: true })) {
+      const subject: string = msg.envelope?.subject || "";
+      const codeMatch = subject.match(/\b(\d{4,8})\b/);
+      const msgDate = msg.envelope?.date ? new Date(msg.envelope.date) : new Date(0);
+
+      debug.checked.push({
+        seq: msg.seq || 0,
+        uid: msg.uid || 0,
+        subject: subject.slice(0, 80),
+        date: msgDate.toISOString(),
+        codeFound: codeMatch ? codeMatch[1] : null,
+      });
+
+      if (!codeMatch) continue;
+
+      // Check if subject looks like an OTP email
+      const isOTP = /(?:code|verification|verify|sign.?in|one.?time|otp|2fa|two.?step)/i.test(subject);
+      if (!isOTP) continue;
+
+      const fromAddr = msg.envelope?.from?.[0];
+      candidates.push({
+        seq: msg.seq || 0,
+        uid: msg.uid || 0,
+        subject,
+        date: msgDate,
+        from: fromAddr
+          ? `${fromAddr.name || ""} <${fromAddr.address || `${fromAddr.user}@${fromAddr.host}`}>`.trim()
+          : "Unknown",
+        code: codeMatch[1],
+      });
     }
 
-    debug.searchCount = uids?.length || 0;
-    if (!uids || uids.length === 0) return { entry: null, debug };
+    // Sort by date descending, return the newest OTP
+    candidates.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-    const recent = uids.sort((a, b) => b - a).slice(0, 5);
-    const targetEmail = email.toLowerCase().trim();
-
-    for (const uid of recent) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const msg = await (client as any).fetchOne(
-          uid.toString(),
-          {
-            envelope: true,
-            headers: ["to", "delivered-to", "x-forwarded-to", "x-original-to"],
-          },
-          { uid: true }
-        );
-        if (!msg) continue;
-
-        const subject: string = msg.envelope?.subject || "";
-        const codeMatch = subject.match(/\b(\d{4,8})\b/);
-
-        // Decode headers — could be Buffer, Map, or string
-        let rawHeaders = "";
-        if (msg.headers) {
-          if (Buffer.isBuffer(msg.headers)) {
-            rawHeaders = msg.headers.toString("utf-8");
-          } else if (msg.headers instanceof Map) {
-            const parts: string[] = [];
-            msg.headers.forEach((val: unknown, key: string) => {
-              const v = Buffer.isBuffer(val) ? val.toString("utf-8") : String(val);
-              parts.push(`${key}: ${v}`);
-            });
-            rawHeaders = parts.join("\n");
-          } else if (typeof msg.headers === "object") {
-            // Could be a plain object or iterable
-            try {
-              rawHeaders = JSON.stringify(msg.headers);
-            } catch {
-              rawHeaders = String(msg.headers);
-            }
-          } else {
-            rawHeaders = String(msg.headers);
-          }
-        }
-
-        const aliasFound = rawHeaders.toLowerCase().includes(targetEmail);
-
-        debug.checked.push({
-          uid,
-          subject: subject.slice(0, 80),
-          rawHeaders: rawHeaders.slice(0, 200),
-          codeFound: codeMatch ? codeMatch[1] : null,
-        });
-
-        if (!codeMatch) continue;
-
-        // If alias found in headers, perfect match
-        // If not found but using X-GM-RAW (trusted search), still accept
-        // If subject search + no alias in headers, still return it
-        // (Target "Enter code" is specific enough, user chose the alias in URL)
-        const fromAddr = msg.envelope?.from?.[0];
-        return {
-          entry: {
-            code: codeMatch[1],
-            subject,
-            date: msg.envelope?.date
-              ? new Date(msg.envelope.date).toISOString()
-              : new Date().toISOString(),
-            from: fromAddr
-              ? `${fromAddr.name || ""} <${fromAddr.address || `${fromAddr.user}@${fromAddr.host}`}>`.trim()
-              : "Unknown",
-          },
-          debug: { ...debug, searchMethod: debug.searchMethod + (aliasFound ? " ✓alias" : " (no alias in headers)") },
-        };
-      } catch {
-        continue;
-      }
+    if (candidates.length > 0) {
+      const best = candidates[0];
+      return {
+        entry: {
+          code: best.code,
+          subject: best.subject,
+          date: best.date.toISOString(),
+          from: best.from,
+        },
+        debug,
+      };
     }
 
     return { entry: null, debug };

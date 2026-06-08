@@ -3,25 +3,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 
-interface OTPEntry {
-  code: string;
-  subject: string;
-  date: string;
-  from: string;
-}
-
-interface DebugChecked {
-  uid: number;
-  subject: string;
-  rawHeaders: string;
-  codeFound: string | null;
-}
-
-interface DebugInfo {
-  searchMethod: string;
-  searchCount: number;
-  checked: DebugChecked[];
-}
+interface OTPEntry { code: string; subject: string; date: string; from: string; }
+interface DebugChecked { seq: number; uid: number; subject: string; date: string; codeFound: string | null; }
+interface DebugInfo { totalMessages: number; fetchedRange: string; checked: DebugChecked[]; }
 
 function timeAgo(dateStr: string) {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -37,17 +21,16 @@ function timeAgo(dateStr: string) {
 export default function EmailPage() {
   const params = useParams();
   const email = decodeURIComponent(params.email as string);
-
   const [entry, setEntry] = useState<OTPEntry | null>(null);
   const [debug, setDebug] = useState<DebugInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [countdown, setCountdown] = useState(30);
+  const [showDebug, setShowDebug] = useState(false);
 
   const fetchCode = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const res = await fetch(`/api/otp?email=${encodeURIComponent(email)}`);
       const data = await res.json();
@@ -55,11 +38,8 @@ export default function EmailPage() {
       setEntry(data.entry ?? null);
       setDebug(data.debug ?? null);
       setCountdown(30);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Unknown error"); }
+    finally { setLoading(false); }
   }, [email]);
 
   useEffect(() => { fetchCode(); }, [fetchCode]);
@@ -69,8 +49,7 @@ export default function EmailPage() {
   function copyCode() {
     if (!entry) return;
     navigator.clipboard.writeText(entry.code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
   }
 
   return (
@@ -131,17 +110,24 @@ export default function EmailPage() {
         )}
 
         {debug && (
-          <div className="mt-16 w-full max-w-2xl border border-white/10 rounded-lg p-4">
-            <p className="text-xs text-yellow-500 uppercase tracking-widest mb-3">Debug</p>
-            <p className="text-xs text-white/40 mb-1">Method: <span className="text-white/70">{debug.searchMethod}</span></p>
-            <p className="text-xs text-white/40 mb-3">Results: <span className="text-white">{debug.searchCount}</span></p>
-            {debug.checked.map((c, i) => (
-              <div key={i} className="border-t border-white/5 py-2">
-                <p className="text-xs text-white/50">UID {c.uid}: <span className="text-white/70">{c.subject}</span></p>
-                <p className="text-xs text-white/30 break-all">Headers: {c.rawHeaders}</p>
-                <p className="text-xs text-white/30">Code: {c.codeFound || "none"}</p>
-              </div>
-            ))}
+          <button onClick={() => setShowDebug(!showDebug)}
+            className="mt-12 text-xs text-white/15 hover:text-white/40 transition-colors">
+            {showDebug ? "hide" : "show"} debug
+          </button>
+        )}
+
+        {debug && showDebug && (
+          <div className="mt-4 w-full max-w-2xl border border-white/10 rounded-lg p-4 text-left">
+            <p className="text-xs text-white/40 mb-1">Inbox: <span className="text-white">{debug.totalMessages}</span> messages</p>
+            <p className="text-xs text-white/40 mb-3">Fetched: seq <span className="text-white">{debug.fetchedRange}</span></p>
+            <div className="max-h-64 overflow-y-auto">
+              {[...debug.checked].reverse().map((c, i) => (
+                <div key={i} className={`border-t border-white/5 py-1.5 ${c.codeFound ? "text-white/60" : "text-white/20"}`}>
+                  <p className="text-xs">#{c.seq} UID:{c.uid} | {c.subject}</p>
+                  <p className="text-xs">{timeAgo(c.date)} | code: {c.codeFound || "—"}</p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
