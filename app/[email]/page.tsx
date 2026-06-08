@@ -13,11 +13,12 @@ interface OTPEntry {
 interface DebugChecked {
   uid: number;
   subject: string;
-  toHeader: string;
+  rawHeaders: string;
   codeFound: string | null;
 }
 
 interface DebugInfo {
+  searchMethod: string;
   searchCount: number;
   checked: DebugChecked[];
 }
@@ -62,16 +63,8 @@ export default function EmailPage() {
   }, [email]);
 
   useEffect(() => { fetchCode(); }, [fetchCode]);
-
-  useEffect(() => {
-    const interval = setInterval(fetchCode, 30000);
-    return () => clearInterval(interval);
-  }, [fetchCode]);
-
-  useEffect(() => {
-    const tick = setInterval(() => setCountdown((c) => (c <= 1 ? 30 : c - 1)), 1000);
-    return () => clearInterval(tick);
-  }, [entry]);
+  useEffect(() => { const i = setInterval(fetchCode, 30000); return () => clearInterval(i); }, [fetchCode]);
+  useEffect(() => { const i = setInterval(() => setCountdown((c) => (c <= 1 ? 30 : c - 1)), 1000); return () => clearInterval(i); }, [entry]);
 
   function copyCode() {
     if (!entry) return;
@@ -108,7 +101,7 @@ export default function EmailPage() {
         )}
 
         {error && (
-          <div className="border border-red-500/30 bg-red-500/5 rounded-lg px-5 py-3 text-center">
+          <div className="border border-red-500/30 bg-red-500/5 rounded-lg px-5 py-3 text-center mb-8">
             <p className="text-xs text-red-400">{error}</p>
           </div>
         )}
@@ -126,7 +119,7 @@ export default function EmailPage() {
               )}
             </div>
             <p className="text-xs text-white/20 mt-6 max-w-xs mx-auto truncate">{entry.subject}</p>
-            <p className="text-xs text-white/15 mt-1">{timeAgo(entry.date)}</p>
+            <p className="text-xs text-white/15 mt-1">{timeAgo(entry.date)} · {entry.from}</p>
           </div>
         )}
 
@@ -137,19 +130,16 @@ export default function EmailPage() {
           </div>
         )}
 
-        {/* Debug panel */}
         {debug && (
-          <div className="mt-16 w-full max-w-xl border border-white/10 rounded-lg p-4">
-            <p className="text-xs text-yellow-500 uppercase tracking-widest mb-3">Debug info</p>
-            <p className="text-xs text-white/40 mb-2">IMAP search for subject &quot;code&quot; returned <span className="text-white">{debug.searchCount}</span> UIDs</p>
-            <p className="text-xs text-white/40 mb-3">Looking for alias: <span className="text-emerald-400">{email}</span></p>
+          <div className="mt-16 w-full max-w-2xl border border-white/10 rounded-lg p-4">
+            <p className="text-xs text-yellow-500 uppercase tracking-widest mb-3">Debug</p>
+            <p className="text-xs text-white/40 mb-1">Method: <span className="text-white/70">{debug.searchMethod}</span></p>
+            <p className="text-xs text-white/40 mb-3">Results: <span className="text-white">{debug.searchCount}</span></p>
             {debug.checked.map((c, i) => (
               <div key={i} className="border-t border-white/5 py-2">
                 <p className="text-xs text-white/50">UID {c.uid}: <span className="text-white/70">{c.subject}</span></p>
-                <p className="text-xs text-white/30">
-                  To header: {c.toHeader}
-                  {" | "}code: {c.codeFound || "none"}
-                </p>
+                <p className="text-xs text-white/30 break-all">Headers: {c.rawHeaders}</p>
+                <p className="text-xs text-white/30">Code: {c.codeFound || "none"}</p>
               </div>
             ))}
           </div>

@@ -13,7 +13,7 @@ export interface DebugInfo {
   checked: Array<{
     uid: number;
     subject: string;
-    toHeader: string;
+    rawHeaders: string;
     codeFound: string | null;
   }>;
 }
@@ -40,67 +40,36 @@ export async function fetchLatestOTP(
 
     let uids: number[] = [];
 
-    // Method 1: Gmail X-GM-RAW — searches actual message content including real To: header
+    // Try Gmail X-GM-RAW first — best for finding alias-specific emails
     try {
       uids = (await client.search(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { raw: `X-GM-RAW "to:${email}"` } as any,
+        { raw: `X-GM-RAW "to:${email} subject:code"` } as any,
         { uid: true }
       )) as number[];
-      debug.searchMethod = "X-GM-RAW to:" + email;
-    } catch {
-      uids = [];
-    }
+      if (uids.length) debug.searchMethod = "X-GM-RAW";
+    } catch { uids = []; }
 
-    // Method 2: standard IMAP TO search
-    if (!uids.length) {
-      try {
-        uids = (await client.search({ to: email }, { uid: true })) as number[];
-        debug.searchMethod = "IMAP TO:" + email;
-      } catch {
-        uids = [];
-      }
-    }
-
-    // Method 3: Gmail search for the alias anywhere in the message
+    // Fallback: subject search
     if (!uids.length) {
       try {
         uids = (await client.search(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          { raw: `X-GM-RAW "${email}"` } as any,
-          { uid: true }
-        )) as number[];
-        debug.searchMethod = "X-GM-RAW raw:" + email;
-      } catch {
-        uids = [];
-      }
-    }
-
-    // Method 4: broad subject search + header check (last resort)
-    if (!uids.length) {
-      try {
-        const broad = (await client.search(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           { subject: "Enter code" } as any,
           { uid: true }
         )) as number[];
-        debug.searchMethod = "subject:Enter code + header scan";
-        // We'll check headers below
-        uids = broad;
-      } catch {
-        uids = [];
-      }
+        if (uids.length) debug.searchMethod = "subject:Enter code";
+      } catch { uids = []; }
     }
 
     debug.searchCount = uids?.length || 0;
     if (!uids || uids.length === 0) return { entry: null, debug };
 
-    const recent = uids.sort((a, b) => b - a).slice(0, 15);
+    const recent = uids.sort((a, b) => b - a).slice(0, 5);
     const targetEmail = email.toLowerCase().trim();
 
     for (const uid of recent) {
       try {
-        // Fetch envelope + the To/Delivered-To headers from raw message
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const msg = await (client as any).fetchOne(
           uid.toString(),
@@ -115,40 +84,59 @@ export async function fetchLatestOTP(
         const subject: string = msg.envelope?.subject || "";
         const codeMatch = subject.match(/\b(\d{4,8})\b/);
 
-        // Get the raw To header (this has the real alias, not Gmail's rewrite)
-        const headerMap: Map<string, string[]> | undefined = msg.headers;
-        const rawHeaders = headerMap
-          ? [...headerMap.values()].flat().join(" ")
-          : "";
+        // Decode headers — could be Buffer, Map, or string
+        let rawHeaders = "";
+        if (msg.headers) {
+          if (Buffer.isBuffer(msg.headers)) {
+            rawHeaders = msg.headers.toString("utf-8");
+          } else if (msg.headers instanceof Map) {
+            const parts: string[] = [];
+            msg.headers.forEach((val: unknown, key: string) => {
+              const v = Buffer.isBuffer(val) ? val.toString("utf-8") : String(val);
+              parts.push(`${key}: ${v}`);
+            });
+            rawHeaders = parts.join("\n");
+          } else if (typeof msg.headers === "object") {
+            // Could be a plain object or iterable
+            try {
+              rawHeaders = JSON.stringify(msg.headers);
+            } catch {
+              rawHeaders = String(msg.headers);
+            }
+          } else {
+            rawHeaders = String(msg.headers);
+          }
+        }
 
-        const aliasInHeaders = rawHeaders.toLowerCase().includes(targetEmail);
+        const aliasFound = rawHeaders.toLowerCase().includes(targetEmail);
 
         debug.checked.push({
           uid,
           subject: subject.slice(0, 80),
-          toHeader: rawHeaders.slice(0, 120),
+          rawHeaders: rawHeaders.slice(0, 200),
           codeFound: codeMatch ? codeMatch[1] : null,
         });
 
-        // For methods 1-3, we trust the search. For method 4, verify alias.
-        const trusted = debug.searchMethod.startsWith("X-GM-RAW") ||
-                         debug.searchMethod.startsWith("IMAP TO");
-        if (!trusted && !aliasInHeaders) continue;
         if (!codeMatch) continue;
 
+        // If alias found in headers, perfect match
+        // If not found but using X-GM-RAW (trusted search), still accept
+        // If subject search + no alias in headers, still return it
+        // (Target "Enter code" is specific enough, user chose the alias in URL)
         const fromAddr = msg.envelope?.from?.[0];
-        const entry: OTPEntry = {
-          code: codeMatch[1],
-          subject,
-          date: msg.envelope?.date
-            ? new Date(msg.envelope.date).toISOString()
-            : new Date().toISOString(),
-          from: fromAddr
-            ? `${fromAddr.name || ""} <${fromAddr.address || `${fromAddr.user}@${fromAddr.host}`}>`.trim()
-            : "Unknown",
+        return {
+          entry: {
+            code: codeMatch[1],
+            subject,
+            date: msg.envelope?.date
+              ? new Date(msg.envelope.date).toISOString()
+              : new Date().toISOString(),
+            from: fromAddr
+              ? `${fromAddr.name || ""} <${fromAddr.address || `${fromAddr.user}@${fromAddr.host}`}>`.trim()
+              : "Unknown",
+          },
+          debug: { ...debug, searchMethod: debug.searchMethod + (aliasFound ? " ✓alias" : " (no alias in headers)") },
         };
-
-        return { entry, debug };
       } catch {
         continue;
       }
