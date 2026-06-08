@@ -7,10 +7,7 @@ export interface OTPEntry {
   from: string;
 }
 
-export async function fetchOTPCodes(
-  email: string,
-  limit = 10
-): Promise<OTPEntry[]> {
+export async function fetchLatestOTP(email: string): Promise<OTPEntry | null> {
   const client = new ImapFlow({
     host: process.env.IMAP_HOST!,
     port: parseInt(process.env.IMAP_PORT || "993"),
@@ -20,78 +17,54 @@ export async function fetchOTPCodes(
       pass: process.env.IMAP_PASS!,
     },
     logger: false,
+    tls: { rejectUnauthorized: false },
   });
 
   await client.connect();
-  const results: OTPEntry[] = [];
 
   try {
     await client.mailboxOpen("INBOX");
 
-    // Try server-side header searches (fast, no download needed)
-    // header: { "header-name": "value" } per imapflow docs
-    const searches = [
-      { header: { "X-Forwarded-To": email } },
-      { header: { "Delivered-To": email } },
-      { header: { "X-Original-To": email } },
-    ];
+    // Search for emails with a code in the subject — server-side, fast
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const uids = await client.search({ subject: "code" } as any, { uid: true }) as number[];
 
-    const uidSets = await Promise.all(
+    if (!uids || uids.length === 0) return null;
+
+    // Only check the most recent 10, newest first
+    const recent = uids.sort((a, b) => b - a).slice(0, 10);
+
+    for (const uid of recent) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      searches.map((q) => client.search(q as any, { uid: true }).catch(() => [] as number[]))
-    );
-
-    let allUids = [...new Set(uidSets.flat() as number[])];
-
-    // Fallback: search by subject keyword (still server-side, no download)
-    if (allUids.length === 0) {
-      const subjectUids = await client.search(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { or: [{ subject: "sign in" }, { subject: "verification code" }, { subject: "Enter code" }] } as any,
+      const msg = await (client as any).fetchOne(
+        uid.toString(),
+        { envelope: true, source: { start: 0, maxLength: 800 } },
         { uid: true }
-      ).catch(() => [] as number[]);
-      allUids = subjectUids as number[];
+      );
+      if (!msg) continue;
+
+      const subject: string = msg.envelope?.subject || "";
+      const codeMatch = subject.match(/\b(\d{4,8})\b/);
+      if (!codeMatch) continue;
+
+      // Check raw header snippet for the alias
+      const headerSnippet = msg.source?.toString("utf8")?.toLowerCase() || "";
+      if (!headerSnippet.includes(email.toLowerCase())) continue;
+
+      const fromAddr = msg.envelope?.from?.[0];
+      return {
+        code: codeMatch[1],
+        subject,
+        date: msg.envelope?.date
+          ? new Date(msg.envelope.date).toISOString()
+          : new Date().toISOString(),
+        from: fromAddr
+          ? `${fromAddr.name || ""} <${fromAddr.address || ""}>`.trim()
+          : "Unknown",
+      };
     }
 
-    if (allUids.length === 0) return [];
-
-    // Sort descending (newest first)
-    const recentUids = (allUids as number[]).sort((a, b) => b - a).slice(0, limit * 3);
-
-    // Fetch envelope + small header slice in parallel
-    const fetchPromises = recentUids.map(async (uid) => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const msg = await (client as any).fetchOne(
-          uid.toString(),
-          { envelope: true, source: { start: 0, maxLength: 1000 } },
-          { uid: true }
-        );
-        if (!msg) return null;
-
-        const subject: string = msg.envelope?.subject || "";
-        const codeMatch = subject.match(/\b(\d{4,8})\b/);
-        if (!codeMatch) return null;
-
-        const date = msg.envelope?.date
-          ? new Date(msg.envelope.date).toISOString()
-          : new Date().toISOString();
-
-        const fromAddr = msg.envelope?.from?.[0];
-        const from = fromAddr
-          ? `${fromAddr.name || ""} <${fromAddr.address || ""}>`.trim()
-          : "Unknown";
-
-        return { code: codeMatch[1], subject, date, from } as OTPEntry;
-      } catch {
-        return null;
-      }
-    });
-
-    const fetched = await Promise.all(fetchPromises);
-    const valid = fetched.filter(Boolean) as OTPEntry[];
-    valid.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    return valid.slice(0, limit);
+    return null;
   } finally {
     await client.logout();
   }
