@@ -8,11 +8,13 @@ export async function GET(req: NextRequest) {
   if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
 
   try {
-    const { entry, debug } = await fetchLatestOTP(decodeURIComponent(email));
-    return NextResponse.json({ entry, debug });
+    const entry = await fetchLatestOTP(decodeURIComponent(email));
+    return NextResponse.json({ entry });
   } catch (err: unknown) {
     console.error("IMAP error:", err);
-    const message = err instanceof Error ? err.message : "Failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to fetch" },
+      { status: 500 }
+    );
   }
 }

@@ -3,8 +3,6 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 
 interface OTPEntry { code: string; subject: string; date: string; from: string; }
-interface DebugChecked { seq: number; subject: string; codeFound: string | null; hasAlias: boolean | null; }
-interface DebugInfo { totalMessages: number; otpCandidates: number; aliasFoundInSource: boolean; sourceSnippet: string; checked: DebugChecked[]; }
 
 function timeAgo(d: string) {
   const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
@@ -17,12 +15,10 @@ export default function EmailPage() {
   const params = useParams();
   const email = decodeURIComponent(params.email as string);
   const [entry, setEntry] = useState<OTPEntry | null>(null);
-  const [debug, setDebug] = useState<DebugInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [countdown, setCountdown] = useState(30);
-  const [showDebug, setShowDebug] = useState(false);
 
   const fetchCode = useCallback(async () => {
     setLoading(true); setError(null);
@@ -30,7 +26,8 @@ export default function EmailPage() {
       const res = await fetch(`/api/otp?email=${encodeURIComponent(email)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
-      setEntry(data.entry ?? null); setDebug(data.debug ?? null); setCountdown(30);
+      setEntry(data.entry ?? null);
+      setCountdown(30);
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Unknown error"); }
     finally { setLoading(false); }
   }, [email]);
@@ -39,7 +36,11 @@ export default function EmailPage() {
   useEffect(() => { const i = setInterval(fetchCode, 30000); return () => clearInterval(i); }, [fetchCode]);
   useEffect(() => { const i = setInterval(() => setCountdown(c => c <= 1 ? 30 : c - 1), 1000); return () => clearInterval(i); }, [entry]);
 
-  const copyCode = () => { if (!entry) return; navigator.clipboard.writeText(entry.code); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const copyCode = () => {
+    if (!entry) return;
+    navigator.clipboard.writeText(entry.code);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white font-mono flex flex-col">
@@ -58,12 +59,13 @@ export default function EmailPage() {
         <p className="text-xs text-white/30 uppercase tracking-widest mb-1">Watching</p>
         <p className="text-sm text-emerald-400 mb-16 break-all text-center">{email}</p>
 
-        {loading && !entry && !debug && (
+        {loading && !entry && (
           <div className="text-center">
             <div className="w-8 h-8 border border-white/20 border-t-white/60 rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-xs text-white/30">Connecting to IMAP…</p>
+            <p className="text-xs text-white/30">Checking inbox…</p>
           </div>
         )}
+
         {error && <div className="border border-red-500/30 bg-red-500/5 rounded-lg px-5 py-3 text-center mb-8"><p className="text-xs text-red-400">{error}</p></div>}
 
         {entry && (
@@ -75,34 +77,14 @@ export default function EmailPage() {
                 : <><svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg><span className="text-xs">tap to copy</span></>}
             </div>
             <p className="text-xs text-white/20 mt-6 max-w-xs mx-auto truncate">{entry.subject}</p>
-            <p className="text-xs text-white/15 mt-1">{timeAgo(entry.date)} · {entry.from}</p>
-          </div>
-        )}
-        {!loading && !error && !entry && (
-          <div className="text-center">
-            <p className="text-white/20 text-sm">No sign-in codes found for this alias.</p>
-            <p className="text-white/10 text-xs mt-2">Will auto-check every 30s.</p>
+            <p className="text-xs text-white/15 mt-1">{timeAgo(entry.date)}</p>
           </div>
         )}
 
-        {debug && <button onClick={() => setShowDebug(!showDebug)} className="mt-12 text-xs text-white/15 hover:text-white/40 transition-colors">{showDebug ? "hide" : "show"} debug</button>}
-        {debug && showDebug && (
-          <div className="mt-4 w-full max-w-2xl border border-white/10 rounded-lg p-4 text-left">
-            <p className="text-xs text-white/40">Inbox: <span className="text-white">{debug.totalMessages}</span> msgs | OTP candidates: <span className="text-white">{debug.otpCandidates}</span></p>
-            <p className="text-xs mt-1 text-white/40">Alias in source: <span className={debug.aliasFoundInSource ? "text-emerald-400" : "text-red-400"}>{debug.aliasFoundInSource ? "YES" : "NO"}</span></p>
-            {debug.sourceSnippet && <p className="text-xs mt-1 text-white/30 break-all font-mono">…{debug.sourceSnippet}…</p>}
-            <div className="mt-3 max-h-48 overflow-y-auto">
-              {debug.checked.map((c, i) => (
-                <div key={i} className="border-t border-white/5 py-1.5 text-xs">
-                  <span className="text-white/50">#{c.seq}</span>{" "}
-                  <span className="text-white/70">{c.subject}</span>{" "}
-                  <span className="text-white/40">code:{c.codeFound || "—"}</span>{" "}
-                  <span className={c.hasAlias ? "text-emerald-400" : c.hasAlias === false ? "text-red-400" : "text-white/20"}>
-                    alias:{c.hasAlias === null ? "err" : c.hasAlias ? "✓" : "✗"}
-                  </span>
-                </div>
-              ))}
-            </div>
+        {!loading && !error && !entry && (
+          <div className="text-center">
+            <p className="text-white/20 text-sm">No sign-in codes found.</p>
+            <p className="text-white/10 text-xs mt-2">Auto-refreshes every 30s.</p>
           </div>
         )}
       </div>
