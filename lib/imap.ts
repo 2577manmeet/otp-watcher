@@ -7,7 +7,20 @@ export interface OTPEntry {
   from: string;
 }
 
-export async function fetchLatestOTP(email: string): Promise<OTPEntry | null> {
+export interface DebugInfo {
+  searchCount: number;
+  checked: Array<{
+    uid: number;
+    subject: string;
+    toAddresses: string[];
+    codeFound: string | null;
+    aliasMatch: boolean;
+  }>;
+}
+
+export async function fetchLatestOTP(
+  email: string
+): Promise<{ entry: OTPEntry | null; debug: DebugInfo }> {
   const client = new ImapFlow({
     host: process.env.IMAP_HOST!,
     port: parseInt(process.env.IMAP_PORT || "993"),
@@ -20,18 +33,18 @@ export async function fetchLatestOTP(email: string): Promise<OTPEntry | null> {
   });
 
   await client.connect();
+  const debug: DebugInfo = { searchCount: 0, checked: [] };
 
   try {
     await client.mailboxOpen("INBOX");
 
-    // Server-side search for OTP-looking emails
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const uids = (await client.search({ subject: "code" } as any, { uid: true })) as number[];
-    if (!uids || uids.length === 0) return null;
+    debug.searchCount = uids?.length || 0;
 
-    // Newest 20 first
-    const recent = uids.sort((a, b) => b - a).slice(0, 20);
+    if (!uids || uids.length === 0) return { entry: null, debug };
 
+    const recent = uids.sort((a, b) => b - a).slice(0, 10);
     const targetEmail = email.toLowerCase().trim();
 
     for (const uid of recent) {
@@ -43,37 +56,47 @@ export async function fetchLatestOTP(email: string): Promise<OTPEntry | null> {
       );
       if (!msg) continue;
 
-      // Check all envelope recipient fields — parsed by imapflow, no byte limits
       const recipients = [
         ...(msg.envelope?.to || []),
         ...(msg.envelope?.cc || []),
         ...(msg.envelope?.bcc || []),
       ];
 
-      const matches = recipients.some(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (r: any) => (r.address || "").toLowerCase() === targetEmail
-      );
-      if (!matches) continue;
-
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const toAddresses = recipients.map((r: any) => r.address || `${r.user}@${r.host}` || "??");
       const subject: string = msg.envelope?.subject || "";
       const codeMatch = subject.match(/\b(\d{4,8})\b/);
-      if (!codeMatch) continue;
+
+      const aliasMatch = toAddresses.some(
+        (addr: string) => addr.toLowerCase() === targetEmail
+      );
+
+      debug.checked.push({
+        uid,
+        subject: subject.slice(0, 80),
+        toAddresses,
+        codeFound: codeMatch ? codeMatch[1] : null,
+        aliasMatch,
+      });
+
+      if (!aliasMatch || !codeMatch) continue;
 
       const fromAddr = msg.envelope?.from?.[0];
-      return {
+      const entry: OTPEntry = {
         code: codeMatch[1],
         subject,
         date: msg.envelope?.date
           ? new Date(msg.envelope.date).toISOString()
           : new Date().toISOString(),
         from: fromAddr
-          ? `${fromAddr.name || ""} <${fromAddr.address || ""}>`.trim()
+          ? `${fromAddr.name || ""} <${fromAddr.address || `${fromAddr.user}@${fromAddr.host}`}>`.trim()
           : "Unknown",
       };
+
+      return { entry, debug };
     }
 
-    return null;
+    return { entry: null, debug };
   } finally {
     await client.logout();
   }
