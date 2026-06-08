@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchOTPCodes } from "@/lib/imap";
 
+export const maxDuration = 30; // seconds — Railway supports up to 300
+
 export async function GET(req: NextRequest) {
   const email = req.nextUrl.searchParams.get("email");
 
