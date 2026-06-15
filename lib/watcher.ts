@@ -94,27 +94,37 @@ async function runScan(): Promise<void> {
   await ensureConnected();
   const client = state.client!;
 
-  // current message count in the open mailbox (ImapFlow keeps this updated)
-  const total = client.mailbox && typeof client.mailbox !== "boolean" ? client.mailbox.exists || 0 : 0;
-  if (!total) return;
+  // Live server-side search for recent messages. Unlike reading mailbox.exists,
+  // a SEARCH always hits the server and reflects mail that arrived since the
+  // connection was opened — so newly delivered codes are picked up immediately.
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  let uids: number[] = [];
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await (client as any).search({ since }, { uid: true });
+    uids = Array.isArray(res) ? res : [];
+  } catch {
+    uids = [];
+  }
+  if (!uids.length) return;
 
-  const start = Math.max(1, total - (SCAN_COUNT - 1));
+  // Only look at the most recent messages we haven't processed yet
+  const recent = uids.slice(-SCAN_COUNT);
+  const toProcess = recent.filter((u) => !state.seen.has(u));
+  if (!toProcess.length) return;
 
-  // Pass 1: pull envelopes (cheap, single streamed command)
-  interface Found { uid: number; subject: string; date: Date; from: string; toText: string; }
+  // Pass 1: pull envelopes for the new UIDs (single streamed command)
+  interface Found { uid: number; subject: string; date: Date; from: string; toText: string; code: string; }
   const fresh: Found[] = [];
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for await (const msg of (client as any).fetch(`${start}:${total}`, { envelope: true, uid: true })) {
+  for await (const msg of (client as any).fetch(toProcess.join(","), { envelope: true, uid: true }, { uid: true })) {
     const uid: number = msg.uid || 0;
-    if (state.seen.has(uid)) continue; // already processed this message
+    if (state.seen.has(uid)) continue;
 
     const subject: string = msg.envelope?.subject || "";
     const codeMatch = subject.match(/\b(\d{4,8})\b/);
-    if (!codeMatch || !OTP_SUBJECT_RE.test(subject)) {
-      // Not an OTP mail — but don't mark seen, cheap to skip again next time
-      continue;
-    }
+    if (!codeMatch || !OTP_SUBJECT_RE.test(subject)) continue;
 
     const fromAddr = msg.envelope?.from?.[0];
     fresh.push({
@@ -125,6 +135,7 @@ async function runScan(): Promise<void> {
         ? `${fromAddr.name || ""} <${fromAddr.address || `${fromAddr.user}@${fromAddr.host}`}>`.trim()
         : "Unknown",
       toText: `${addrText(msg.envelope?.to)} ${addrText(msg.envelope?.cc)}`,
+      code: codeMatch[1],
     });
   }
 
@@ -145,7 +156,7 @@ async function runScan(): Promise<void> {
 
     state.seen.add(f.uid);
     state.cache.push({
-      code: (f.subject.match(/\b(\d{4,8})\b/) || ["", ""])[1],
+      code: f.code,
       subject: f.subject,
       date: f.date.toISOString(),
       from: f.from,
@@ -193,11 +204,15 @@ function startBackgroundPolling(): void {
 export async function getLatestOTP(email: string): Promise<OTPEntry | null> {
   startBackgroundPolling();
 
-  // Cold start: make sure we've scanned at least once before answering
-  if (!state.warmed) {
+  // Await a scan on every request. On a warm persistent connection this only
+  // fetches genuinely new messages (often none), so it stays fast while
+  // guaranteeing the latest code is reflected immediately.
+  try {
     await scanOnce();
-    state.warmed = true;
+  } catch {
+    // fall back to whatever is cached if a scan fails
   }
+  state.warmed = true;
 
   const target = email.toLowerCase().trim();
   const match = state.cache.find((c) => c.search.includes(target));

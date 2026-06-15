@@ -23,7 +23,7 @@ export default function EmailPage() {
   const fetchCode = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`/api/otp?email=${encodeURIComponent(email)}`);
+      const res = await fetch(`/api/otp?email=${encodeURIComponent(email)}`, { cache: "no-store" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
       setEntry(data.entry ?? null);

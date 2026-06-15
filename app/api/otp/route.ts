@@ -11,7 +11,10 @@ export async function GET(req: NextRequest) {
 
   try {
     const entry = await getLatestOTP(decodeURIComponent(email));
-    return NextResponse.json({ entry });
+    return NextResponse.json(
+      { entry },
+      { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } }
+    );
   } catch (err: unknown) {
     console.error("IMAP error:", err);
     return NextResponse.json(
