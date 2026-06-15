@@ -18,7 +18,7 @@ export default function EmailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [countdown, setCountdown] = useState(30);
+  const [countdown, setCountdown] = useState(5);
 
   const fetchCode = useCallback(async () => {
     setLoading(true); setError(null);
@@ -27,14 +27,14 @@ export default function EmailPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
       setEntry(data.entry ?? null);
-      setCountdown(30);
+      setCountdown(5);
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Unknown error"); }
     finally { setLoading(false); }
   }, [email]);
 
   useEffect(() => { fetchCode(); }, [fetchCode]);
-  useEffect(() => { const i = setInterval(fetchCode, 30000); return () => clearInterval(i); }, [fetchCode]);
-  useEffect(() => { const i = setInterval(() => setCountdown(c => c <= 1 ? 30 : c - 1), 1000); return () => clearInterval(i); }, [entry]);
+  useEffect(() => { const i = setInterval(fetchCode, 5000); return () => clearInterval(i); }, [fetchCode]);
+  useEffect(() => { const i = setInterval(() => setCountdown(c => c <= 1 ? 5 : c - 1), 1000); return () => clearInterval(i); }, [entry]);
 
   const copyCode = () => {
     if (!entry) return;
@@ -84,7 +84,7 @@ export default function EmailPage() {
         {!loading && !error && !entry && (
           <div className="text-center">
             <p className="text-white/20 text-sm">No sign-in codes found.</p>
-            <p className="text-white/10 text-xs mt-2">Auto-refreshes every 30s.</p>
+            <p className="text-white/10 text-xs mt-2">Auto-refreshes every 5s.</p>
           </div>
         )}
       </div>
