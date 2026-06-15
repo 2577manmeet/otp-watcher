@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchLatestOTP } from "@/lib/imap";
+import { getLatestOTP } from "@/lib/watcher";
 
 export const maxDuration = 30;
+// Always run dynamically so the in-memory cache is shared across requests
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const email = req.nextUrl.searchParams.get("email");
   if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
 
   try {
-    const entry = await fetchLatestOTP(decodeURIComponent(email));
+    const entry = await getLatestOTP(decodeURIComponent(email));
     return NextResponse.json({ entry });
   } catch (err: unknown) {
     console.error("IMAP error:", err);
